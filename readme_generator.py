@@ -84,6 +84,9 @@ function/class names), draft a README.md section with these parts:
 3. ## Key Components -- bullet list of the most important classes/functions found,
    with the file each lives in.
 
+Target Documentation Tone & Style: {style}
+Additional Focus / User Instructions: {custom_instructions}
+
 Do not invent features, APIs, or behavior that isn't implied by the structure below.
 
 STRUCTURAL SUMMARY:
@@ -91,12 +94,22 @@ STRUCTURAL SUMMARY:
 """
 
 
-def generate_readme_section(repo_path: str, google_api_key: str) -> str:
+def generate_readme_section(
+    repo_path: str,
+    google_api_key: str,
+    style: str = "Technical & Comprehensive",
+    custom_instructions: str = "None provided."
+) -> str:
     summary = build_repo_summary(repo_path)
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash", google_api_key=google_api_key, temperature=0.2
     )
     prompt = ChatPromptTemplate.from_template(README_PROMPT)
     chain = prompt | llm
-    response = chain.invoke({"summary": summary})
+    response = chain.invoke({
+        "summary": summary,
+        "style": style or "Technical & Comprehensive",
+        "custom_instructions": custom_instructions or "None provided."
+    })
     return response.content
+

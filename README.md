@@ -1,109 +1,120 @@
-# CodeCite: Ask Your Repository
+# 🧭 CodeCite — Ask Your Repository
 
-A Streamlit app that indexes a local folder or GitHub repo and answers
-"where is X implemented?" questions with real file paths, line numbers, and
-code snippets — instead of the LLM guessing from general training knowledge.
+CodeCite is a Retrieval-Augmented Generation (RAG) tool that lets you ask natural-language questions about any codebase — local or on GitHub — and get answers grounded in the **exact file and line numbers** where the relevant code lives. It also generates a first-draft `README.md` section directly from the structure of the indexed repository.
 
-## Why this isn't "just another RAG chatbot"
+Built with **LangChain**, **ChromaDB**, **Streamlit**, and **Google Gemini**.
 
-Most PDF/notes Q&A projects treat the document as one blob of prose. Code is
-different: it has structure (functions, classes, files, directories) and the
-*grounding unit that matters* is a specific file and line range, not a page
-number. This project's retrieval and citation layer is built around that:
+---
 
-- Chunks are split with LangChain's **language-aware** splitter
-  (`RecursiveCharacterTextSplitter.from_language`), so a chunk boundary
-  respects function/class boundaries in Python, JS, Java, Go, etc. instead of
-  cutting a function in half.
-- Each chunk is mapped back to its **exact start/end line** in the source
-  file (`indexer.py::_split_file_with_line_numbers`), so answers can say
-  "implemented in `src/auth.py`, lines 6–14" rather than just "in auth.py".
-- The QA prompt (`qa_chain.py`) explicitly forbids answering from outside
-  the retrieved context and requires the model to say "not found in the
-  indexed code" rather than hallucinate a plausible-sounding file.
+## ✨ Features
 
-## Architecture
+- **Index any repository** — point it at a local folder path or a public GitHub URL.
+- **Language-aware chunking** — uses LangChain's `RecursiveCharacterTextSplitter.from_language` so Python, JS/TS, Java, Kotlin, Go, Rust, C/C++, C#, PHP, Ruby, Swift, Scala, Markdown, and HTML are split along syntactically meaningful boundaries instead of arbitrary character counts.
+- **File-and-line grounded citations** — every retrieved chunk is mapped back to its exact `(start_line, end_line)` in the source file, so answers can cite precisely where code lives instead of just which file.
+- **Strictly grounded Q&A** — the LLM is instructed to answer only from retrieved context, and to say plainly when something isn't found rather than fabricate a file path or function.
+- **Two embedding options** — run fully offline and free with local `sentence-transformers`, or use Gemini embeddings for a hosted alternative.
+- **Automatic rate-limit handling** — batches embedding calls and backs off with exponential retry on transient `429` errors (common on free-tier embedding APIs).
+- **README generator** — builds a directory tree + regex-extracted function/class signatures from the indexed repo and asks Gemini to draft an `Overview`, `Project Structure`, and `Key Components` section from it — without dumping raw file contents into the prompt.
+- **Chat-style UI** — persistent chat history per session, with expandable source-chunk citations under each answer.
+
+---
+
+## 🏗️ Project Structure
 
 ```
-GitHub URL / local path
-        │
-        ▼
-  indexer.resolve_source        (clone repo if URL, else use local path)
-        │
-        ▼
-  indexer.build_documents       (walk files → language-aware chunking →
-        │                        attach file_path + start/end line metadata)
-        ▼
-  indexer.get_embeddings        (local sentence-transformers, OR Gemini
-        │                        text-embedding-004 if API key given)
-        ▼
-  Chroma vector store (persisted to disk)
-        │
-        ├──▶ qa_chain.answer_question       ("where is X implemented?")
-        │        retrieves top-k chunks → Gemini answers ONLY from them
-        │        → returns answer + cited (file, lines, snippet) sources
-        │
-        └──▶ readme_generator.generate_readme_section
-                 builds a directory-tree + function/class signature summary
-                 (regex-based, no LLM) → Gemini drafts README prose from
-                 that structural summary only
+.
+├── app.py                # Streamlit front-end: sidebar indexing controls, chat tab, README tab
+├── indexer.py             # Repo resolution, file walking, chunking, embedding, Chroma vector store
+├── qa_chain.py            # Retrieval + grounded-answer prompt chain
+└── readme_generator.py    # Structural repo summary + README drafting chain
 ```
 
-`app.py` is the Streamlit UI on top of these three modules (indexing sidebar,
-a chat tab, and a README-generation tab).
+| File | Responsibility |
+|---|---|
+| `indexer.py` | Clones/resolves the repo, walks source files (skipping `.git`, `node_modules`, build artifacts, etc.), splits each file into language-aware chunks with accurate line-number metadata, embeds them, and persists them to a per-repo Chroma collection. |
+| `qa_chain.py` | Retrieves the top-`k` relevant chunks for a question and asks Gemini to answer **only** from that context, citing file paths and line numbers. |
+| `readme_generator.py` | Builds a lightweight directory-tree + signature summary of the repo (no raw file dumps) and asks Gemini to draft a README section from it. |
+| `app.py` | Streamlit UI tying it all together — indexing controls, chat interface, and README generation tab. |
 
-## Setup
+---
+
+## ⚙️ How It Works
+
+1. **Resolve** — `resolve_source()` accepts a local directory path or a GitHub URL (cloned via GitPython with `depth=1`).
+2. **Chunk** — `build_documents()` walks all indexable files and splits them using a language-specific `RecursiveCharacterTextSplitter`, computing exact line ranges for every chunk by locating it in the original file text.
+3. **Embed & Store** — chunks are embedded (locally via `sentence-transformers/all-MiniLM-L6-v2`, or via Gemini's `gemini-embedding-001`) and stored in a Chroma vector store, unique per repository source (keyed by a SHA-1 hash of the source string).
+4. **Retrieve & Answer** — `answer_question()` retrieves the top-`k` most relevant chunks and passes them to Gemini (`gemini-2.5-flash`) with a strict system prompt: answer only from context, cite file/line, and admit when something isn't found.
+5. **Generate README** — `generate_readme_section()` builds a directory tree and extracts top-level function/class names per file via regex, then asks Gemini to draft a plain-language `README.md` section from that structural summary alone.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Python 3.10+
+- A [Google Gemini API key](https://aistudio.google.com/app/apikey) (free tier available)
+- Git (for indexing GitHub URLs)
+
+### Installation
 
 ```bash
+git clone <this-repo-url>
+cd codecite
 pip install -r requirements.txt
-cp .env.example .env        # then paste your free Gemini key into .env
+```
+
+### Environment Setup
+
+Create a `.env` file in the project root:
+
+```
+GOOGLE_API_KEY=your_gemini_api_key_here
+```
+
+### Run
+
+```bash
 streamlit run app.py
 ```
 
-Get a free Gemini API key at https://aistudio.google.com/app/apikey (used
-for answering questions and generating the README; embeddings can run fully
-locally/free via sentence-transformers if you don't want to use Gemini for
-that part too).
+The app will open in your browser at `http://localhost:8501`.
 
-## Usage
+### Usage
 
-1. In the sidebar, paste a local folder path (e.g. `/home/you/myproject`) or
-   a public GitHub URL (e.g. `https://github.com/psf/black`), pick an
-   embedding backend, and click **Index repository**.
-2. Go to **Ask the repo** and ask things like:
-   - "Where is the login/authentication logic implemented?"
-   - "Which file defines the main Flask routes?"
-   - "How is the database connection configured?"
-3. Go to **Generate README** to draft an Overview / Structure / Key
-   Components section from the indexed repo's structure.
+1. Enter your Gemini API key in the sidebar (if not set via `.env`).
+2. Enter a local folder path or a GitHub URL under **"Local folder path OR GitHub URL"**.
+3. Choose an embedding backend — **Local** (free, offline, recommended) or **Gemini** (hosted, subject to free-tier rate limits).
+4. Click **📥 Index repository** and wait for chunking + embedding to complete.
+5. Switch to the **💬 Ask the repo** tab and ask questions like:
+   - *"Where is user authentication implemented?"*
+   - *"How does the rate-limit retry logic work?"*
+6. Switch to the **📄 Generate README** tab to draft a README section from the indexed repo's structure.
 
-## How this maps to the required project outcomes
+---
 
-| Outcome | Where it's implemented |
+## 🧩 Tech Stack
+
+| Layer | Technology |
 |---|---|
-| 1. Answer where-is-this-implemented questions with correct file references | `qa_chain.py` — grounded prompt + per-chunk `file_path`/`start_line`/`end_line` metadata surfaced in the UI |
-| 2. Index a real repository and stay grounded in actual code | `indexer.py` — real file walking + language-aware chunking + vector retrieval; prompt forbids answering outside retrieved context |
-| 3. Add a feature that drafts a README section from the indexed codebase | `readme_generator.py` — structural summary (tree + signatures) → LLM drafts README prose, downloadable from the app |
+| UI | Streamlit |
+| Orchestration | LangChain (`langchain-core`, `langchain-text-splitters`, `langchain-google-genai`) |
+| Vector Store | ChromaDB (`langchain-chroma`) |
+| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` (local) or Gemini `gemini-embedding-001` |
+| LLM | Google Gemini (`gemini-2.5-flash`) |
+| Repo Access | GitPython |
 
-## Known limitations (worth stating in your viva/report — evaluators like honesty here)
+---
 
-- Signature extraction for the README generator is regex-based, not a real
-  parser/AST, so it can miss unusual syntax (decorators, multi-line
-  signatures). This is a documented tradeoff for keeping it dependency-light
-  and language-agnostic; swapping in `tree-sitter` per-language would be the
-  natural v2.
-- Retrieval is single-pass top-k similarity search — no re-ranking, no
-  hybrid keyword+vector search. For a bigger repo this is where answer
-  quality would start to degrade; a good follow-up experiment is comparing
-  plain similarity search vs. adding a BM25 keyword pass (mirrors the kind
-  of chunking-strategy comparison other projects on this list ask for).
-- Very large repos (Chroma's free local index isn't built for
-  millions of chunks) will be slow to index; there's a per-file size cap to
-  avoid choking on generated/data files, but no repo-size cap yet.
+## ⚠️ Known Limitations
 
-## Possible extensions if you want to push this further
+- Line-number attribution for a chunk relies on locating its text within the original file; files with large amounts of duplicated content (e.g. repeated license headers) can occasionally cause a chunk to be attributed to the first matching occurrence rather than its true position.
+- The README generator's signature extraction currently covers Python, JavaScript, TypeScript, Java, and Go; other indexed languages (C++, Rust, Kotlin, Swift, C#, PHP, Ruby, Scala) will still appear in the directory tree but won't contribute to the "Key Components" list.
+- Each Chroma vector store is deleted and rebuilt from scratch on every index run — there's no incremental re-indexing of only changed files yet.
+- Large repositories on the free Gemini embedding tier (100 requests/minute) will index more slowly due to automatic rate-limit backoff; local embeddings are recommended for bigger codebases.
 
-- Re-ranking retrieved chunks with a cross-encoder before answering.
-- A "compare two versions of this repo" mode (diff-aware retrieval).
-- Multi-turn follow-ups that keep the previous question's retrieved files in
-  context (currently each question retrieves fresh).
+---
+
+## 📄 License
+
+This project was built as part of an academic coursework submission. Add your preferred license here (e.g. MIT) if distributing publicly.
